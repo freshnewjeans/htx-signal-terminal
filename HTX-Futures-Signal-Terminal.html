@@ -229,7 +229,7 @@ select.field option{background:var(--bg2)}
       Refresh
     </button>
     <div class="auto">
-      <span>Auto 25s</span>
+      <span>Auto 3s</span>
       <div class="switch on" id="autoSwitch" role="switch" aria-checked="true" tabindex="0"></div>
     </div>
   </div>
@@ -310,7 +310,7 @@ select.field option{background:var(--bg2)}
               <option value="1d">1D</option><option value="1w">1W</option>
             </select>
           </div>
-          <div class="hint" style="margin-top:8px">Confirm LONG/SHORT, wait for a pullback to the retrace level, and enter only on a <b>rejection</b> there (pin bar / engulfing / reversal candle). Rejection entries are only given on the timeframe above and higher. Stop at the swing extreme &plusmn; ATR buffer; target at the risk&ndash;reward multiple.</div>
+          <div class="hint" style="margin-top:8px">Confirm LONG/SHORT, wait for a pullback to the retrace level, and enter only on a <b>rejection</b> there (pin bar / engulfing). If a <b>support/resistance</b> sits nearby, let price <b>break it out, retrace to it, then reject</b> before entering. Rejection entries only on the timeframe above and higher. Stop at the swing extreme &plusmn; ATR buffer; target at the risk&ndash;reward multiple.</div>
         </div>
 
         <div class="card signals">
@@ -551,14 +551,23 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   const range = swingHigh - swingLow;
   if(range <= 0) return null;
   const fib = Math.max(0.05, Math.min(0.95, cfg.fib/100));
-  const buff = (atrArr && atrArr[sigIdx] ? atrArr[sigIdx] : range*0.03) * (cfg.buff ?? 1);
+  const atrVal = (atrArr && atrArr[sigIdx]) ? atrArr[sigIdx] : range*0.03;
+  const buff = atrVal * (cfg.buff ?? 1);
+
+  const fibEntry = (dir==='LONG') ? (swingHigh - range*fib) : (swingLow + range*fib);
+
+  // Nearby support/resistance: if a significant level sits near the retrace, the entry must
+  // wait for a breakout through it, then a retrace to it, then a rejection.
+  const level = findNearbyLevel(cs, sigIdx, dir, fibEntry, atrVal);
+  const hasLevel = !!level;
+
   let entry, stop, take;
   if(dir==='LONG'){
-    entry = swingHigh - range*fib;
+    entry = hasLevel ? level.price : fibEntry;
     stop  = swingLow - buff;
     take  = entry + cfg.rr*(entry-stop);
   } else {
-    entry = swingLow + range*fib;
+    entry = hasLevel ? level.price : fibEntry;
     stop  = swingHigh + buff;
     take  = entry - cfg.rr*(stop-entry);
   }
@@ -566,22 +575,29 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   if(r <= 0) return null;
   const tol = Math.max(range*0.01, buff*0.5);
 
-  // Walk forward: wait for a pullback into the zone that ALSO prints a rejection candle/pattern,
+  // Walk forward: breakout (if a level gates the entry) -> retrace to the level -> rejection,
   // then resolve stop/target. The entry fills at the rejection candle's close.
   let status='awaiting', fillPrice=null, fillT=null, rej=null, outcome=null, exitT=null, exitPrice=null;
+  let brokenOut = false;
   for(let j=sigIdx+1;j<cs.length;j++){
     if(dir==='LONG'){
       if(status==='awaiting'){
-        rej = rejectionAt(cs, j, 'LONG', entry, tol);
-        if(rej){ status='in'; fillPrice=cs[j].close; fillT=j; }
+        if(hasLevel && !brokenOut && cs[j].close > level.price) brokenOut = true;
+        if(!hasLevel || brokenOut){
+          rej = rejectionAt(cs, j, 'LONG', entry, tol);
+          if(rej){ status='in'; fillPrice=cs[j].close; fillT=j; }
+        }
       } else if(status==='in'){
         if(cs[j].high >= take){ status='tp'; outcome='TP'; exitT=j; exitPrice=take; break; }
         if(cs[j].low <= stop){ status='sl'; outcome='SL'; exitT=j; exitPrice=stop; break; }
       }
     } else {
       if(status==='awaiting'){
-        rej = rejectionAt(cs, j, 'SHORT', entry, tol);
-        if(rej){ status='in'; fillPrice=cs[j].close; fillT=j; }
+        if(hasLevel && !brokenOut && cs[j].close < level.price) brokenOut = true;
+        if(!hasLevel || brokenOut){
+          rej = rejectionAt(cs, j, 'SHORT', entry, tol);
+          if(rej){ status='in'; fillPrice=cs[j].close; fillT=j; }
+        }
       } else if(status==='in'){
         if(cs[j].low <= take){ status='tp'; outcome='TP'; exitT=j; exitPrice=take; break; }
         if(cs[j].high >= stop){ status='sl'; outcome='SL'; exitT=j; exitPrice=stop; break; }
@@ -590,7 +606,35 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   }
   const rr = cfg.rr;
   return {dir, entry, stop, take, r, rr, buff, fib:cfg.fib, swingHigh, swingLow, tol,
+    mode: hasLevel ? 'breakout' : 'retrace', level: level ? level.price : null, side: level ? level.side : null, hasLevel,
     status, fillPrice, fillT, rej, outcome, exitT, exitPrice};
+}
+function findNearbyLevel(cs, sigIdx, dir, refPrice, atrVal){
+  const win = 50, lo = Math.max(0, sigIdx - win), hi = Math.min(sigIdx, cs.length-1);
+  if(hi - lo < 4) return null;
+  const pivots = [];
+  for(let i=lo+1;i<hi;i++){
+    const h = cs[i].high, l = cs[i].low;
+    if(cs[i-1].high < h && cs[i+1].high < h) pivots.push({p:h, kind:'res'});
+    if(cs[i-1].low > l && cs[i+1].low > l) pivots.push({p:l, kind:'sup'});
+  }
+  if(!pivots.length) return null;
+  const levelTol = Math.max(1.2*atrVal, refPrice*0.012);
+  let best = null;
+  if(dir==='LONG'){
+    for(const pv of pivots){
+      if(pv.kind==='res' && pv.p > refPrice && pv.p <= refPrice + levelTol){
+        if(!best || pv.p < best.p) best = {price:pv.p, side:'res'};
+      }
+    }
+  } else {
+    for(const pv of pivots){
+      if(pv.kind==='sup' && pv.p < refPrice && pv.p >= refPrice - levelTol){
+        if(!best || pv.p > best.p) best = {price:pv.p, side:'sup'};
+      }
+    }
+  }
+  return best;
 }
 function rejectionAt(cs, j, dir, entry, tol){
   const c = cs[j], p = cs[j-1];
@@ -802,7 +846,7 @@ function renderSetupCard(d){
   $('#setupName').textContent = s.dir + ' · ' + s.name;
   $('#setupSrc').textContent = s.conf + ' confidence · ' + fmtTime(s.time);
   $('#setupEntry').textContent = fmtPrice(sp.entry);
-  $('#setupEntrySub').textContent = 'Fib ' + sp.fib + '% · +rejection';
+  $('#setupEntrySub').textContent = sp.mode==='breakout' ? ('S/R '+(sp.side==='res'?'resistance':'support')+' breakout') : ('Fib ' + sp.fib + '% retrace');
   $('#setupStop').textContent = fmtPrice(sp.stop);
   $('#setupStopSub').textContent = 'Risk ' + fmtPrice(sp.r);
   $('#setupTake').textContent = fmtPrice(sp.take);
@@ -813,6 +857,10 @@ function renderSetupCard(d){
     return;
   }
   const exitTxt = (sp.exitT!=null && d.candles[sp.exitT]) ? ' at ' + fmtTime(d.candles[sp.exitT].time) : '';
+  if(sp.mode==='breakout' && sp.status==='awaiting'){
+    el.innerHTML = '<span class="st-wait">&#9203; Awaiting breakout + retrace + rejection</span> — nearby '+(sp.side==='res'?'resistance':'support')+' at <b>'+fmtPrice(sp.level)+'</b>. Let price break it, pull back to it, then print a rejection (pin bar / engulfing). Enter at that rejection close.';
+    return;
+  }
   if(sp.status==='awaiting'){
     el.innerHTML = '<span class="st-wait">&#9203; Awaiting retrace + rejection</span> — price must pull back toward <b>'+fmtPrice(sp.entry)+'</b> and print a rejection candle there (pin bar / engulfing). Enter at that rejection close.';
   } else if(sp.status==='in'){
@@ -991,7 +1039,7 @@ function init(){
     STATE.tick++;
     refreshMain();
     if(STATE.tick % 2 === 0) loadMinis();
-  }, 25000);
+  }, 3000);
 }
 init();
 })();
