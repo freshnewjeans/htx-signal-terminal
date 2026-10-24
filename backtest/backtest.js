@@ -111,9 +111,11 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   const fibEntry=(dir==='LONG')?(swingHigh-range*fib):(swingLow+range*fib);
   const level=findNearbyLevel(cs,sigIdx,dir,fibEntry,atrVal);
   const hasLevel=!!level;
+  const entryLevel=hasLevel?level.price:fibEntry;
+  const breakLevel=hasLevel?level.price:(dir==='LONG'?swingHigh:swingLow);
   let entry, stop, take;
-  if(dir==='LONG'){ entry=hasLevel?level.price:fibEntry; stop=swingLow-buff; take=entry+cfg.rr*(entry-stop); }
-  else { entry=hasLevel?level.price:fibEntry; stop=swingHigh+buff; take=entry-cfg.rr*(stop-entry); }
+  if(dir==='LONG'){ entry=entryLevel; stop=swingLow-buff; take=entry+cfg.rr*(entry-stop); }
+  else { entry=entryLevel; stop=swingHigh+buff; take=entry-cfg.rr*(stop-entry); }
   const r=Math.abs(entry-stop);
   if(r<=0) return null;
   const tol=Math.max(range*0.01,buff*0.5);
@@ -122,23 +124,23 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   for(let j=sigIdx+1;j<cs.length;j++){
     if(dir==='LONG'){
       if(status==='awaiting'){
-        if(hasLevel && !brokenOut && cs[j].close>level.price) brokenOut=true;
-        if(!hasLevel||brokenOut){ rej=rejectionAt(cs,j,'LONG',entry,tol); if(rej){status='in';fillPrice=cs[j].close;fillT=j;} }
+        if(!brokenOut && cs[j].close>breakLevel) brokenOut=true;
+        if(brokenOut){ rej=rejectionAt(cs,j,'LONG',entry,tol); if(rej){status='in';fillPrice=cs[j].close;fillT=j;} }
       } else if(status==='in'){
         if(cs[j].high>=take){status='tp';outcome='TP';exitT=j;exitPrice=take;break;}
         if(cs[j].low<=stop){status='sl';outcome='SL';exitT=j;exitPrice=stop;break;}
       }
     } else {
       if(status==='awaiting'){
-        if(hasLevel && !brokenOut && cs[j].close<level.price) brokenOut=true;
-        if(!hasLevel||brokenOut){ rej=rejectionAt(cs,j,'SHORT',entry,tol); if(rej){status='in';fillPrice=cs[j].close;fillT=j;} }
+        if(!brokenOut && cs[j].close<breakLevel) brokenOut=true;
+        if(brokenOut){ rej=rejectionAt(cs,j,'SHORT',entry,tol); if(rej){status='in';fillPrice=cs[j].close;fillT=j;} }
       } else if(status==='in'){
         if(cs[j].low<=take){status='tp';outcome='TP';exitT=j;exitPrice=take;break;}
         if(cs[j].high>=stop){status='sl';outcome='SL';exitT=j;exitPrice=stop;break;}
       }
     }
   }
-  return {dir,entry,stop,take,r,rr:cfg.rr,mode:hasLevel?'breakout':'retrace',level:level?level.price:null,side:level?level.side:null,
+  return {dir,entry,stop,take,r,rr:cfg.rr,mode:'breakout',level:breakLevel,side:hasLevel?level.side:(dir==='LONG'?'res':'sup'),hasLevel,
     status,fillPrice,fillT,rej,outcome,exitT,exitPrice};
 }
 function buildSignals(cs, cfg){

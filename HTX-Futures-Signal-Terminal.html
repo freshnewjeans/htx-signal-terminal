@@ -556,18 +556,21 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
 
   const fibEntry = (dir==='LONG') ? (swingHigh - range*fib) : (swingLow + range*fib);
 
-  // Nearby support/resistance: if a significant level sits near the retrace, the entry must
-  // wait for a breakout through it, then a retrace to it, then a rejection.
+  // Entry is always breakout -> retrace -> rejection.
+  // If a nearby S/R level gates the retrace, we break it and retrace to it.
+  // Otherwise we break the recent swing extreme in the trade direction, then retrace to the fib level.
   const level = findNearbyLevel(cs, sigIdx, dir, fibEntry, atrVal);
   const hasLevel = !!level;
+  const entryLevel = hasLevel ? level.price : fibEntry;
+  const breakLevel = hasLevel ? level.price : (dir==='LONG' ? swingHigh : swingLow);
 
   let entry, stop, take;
   if(dir==='LONG'){
-    entry = hasLevel ? level.price : fibEntry;
+    entry = entryLevel;
     stop  = swingLow - buff;
     take  = entry + cfg.rr*(entry-stop);
   } else {
-    entry = hasLevel ? level.price : fibEntry;
+    entry = entryLevel;
     stop  = swingHigh + buff;
     take  = entry - cfg.rr*(stop-entry);
   }
@@ -575,15 +578,15 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   if(r <= 0) return null;
   const tol = Math.max(range*0.01, buff*0.5);
 
-  // Walk forward: breakout (if a level gates the entry) -> retrace to the level -> rejection,
-  // then resolve stop/target. The entry fills at the rejection candle's close.
+  // Walk forward: breakout -> retrace to the entry level -> rejection, then resolve stop/target.
+  // The entry fills at the rejection candle's close.
   let status='awaiting', fillPrice=null, fillT=null, rej=null, outcome=null, exitT=null, exitPrice=null;
   let brokenOut = false;
   for(let j=sigIdx+1;j<cs.length;j++){
     if(dir==='LONG'){
       if(status==='awaiting'){
-        if(hasLevel && !brokenOut && cs[j].close > level.price) brokenOut = true;
-        if(!hasLevel || brokenOut){
+        if(!brokenOut && cs[j].close > breakLevel) brokenOut = true;
+        if(brokenOut){
           rej = rejectionAt(cs, j, 'LONG', entry, tol);
           if(rej){ status='in'; fillPrice=cs[j].close; fillT=j; }
         }
@@ -593,8 +596,8 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
       }
     } else {
       if(status==='awaiting'){
-        if(hasLevel && !brokenOut && cs[j].close < level.price) brokenOut = true;
-        if(!hasLevel || brokenOut){
+        if(!brokenOut && cs[j].close < breakLevel) brokenOut = true;
+        if(brokenOut){
           rej = rejectionAt(cs, j, 'SHORT', entry, tol);
           if(rej){ status='in'; fillPrice=cs[j].close; fillT=j; }
         }
@@ -606,7 +609,7 @@ function computeSetup(cs, sigIdx, dir, cfg, atrArr){
   }
   const rr = cfg.rr;
   return {dir, entry, stop, take, r, rr, buff, fib:cfg.fib, swingHigh, swingLow, tol,
-    mode: hasLevel ? 'breakout' : 'retrace', level: level ? level.price : null, side: level ? level.side : null, hasLevel,
+    mode:'breakout', level: breakLevel, side: hasLevel ? level.side : (dir==='LONG' ? 'res' : 'sup'), hasLevel, breakLevel,
     status, fillPrice, fillT, rej, outcome, exitT, exitPrice};
 }
 function findNearbyLevel(cs, sigIdx, dir, refPrice, atrVal){
@@ -846,7 +849,7 @@ function renderSetupCard(d){
   $('#setupName').textContent = s.dir + ' · ' + s.name;
   $('#setupSrc').textContent = s.conf + ' confidence · ' + fmtTime(s.time);
   $('#setupEntry').textContent = fmtPrice(sp.entry);
-  $('#setupEntrySub').textContent = sp.mode==='breakout' ? ('S/R '+(sp.side==='res'?'resistance':'support')+' breakout') : ('Fib ' + sp.fib + '% retrace');
+  $('#setupEntrySub').textContent = sp.hasLevel ? ('S/R '+(sp.side==='res'?'resistance':'support')+' breakout') : ('Swing breakout · Fib '+sp.fib+'% retrace');
   $('#setupStop').textContent = fmtPrice(sp.stop);
   $('#setupStopSub').textContent = 'Risk ' + fmtPrice(sp.r);
   $('#setupTake').textContent = fmtPrice(sp.take);
@@ -858,7 +861,11 @@ function renderSetupCard(d){
   }
   const exitTxt = (sp.exitT!=null && d.candles[sp.exitT]) ? ' at ' + fmtTime(d.candles[sp.exitT].time) : '';
   if(sp.mode==='breakout' && sp.status==='awaiting'){
-    el.innerHTML = '<span class="st-wait">&#9203; Awaiting breakout + retrace + rejection</span> — nearby '+(sp.side==='res'?'resistance':'support')+' at <b>'+fmtPrice(sp.level)+'</b>. Let price break it, pull back to it, then print a rejection (pin bar / engulfing). Enter at that rejection close.';
+    const what = sp.hasLevel
+      ? ('nearby '+(sp.side==='res'?'resistance':'support')+' at <b>'+fmtPrice(sp.level)+'</b>')
+      : ('the recent swing '+(sp.side==='res'?'high':'low')+' at <b>'+fmtPrice(sp.level)+'</b>');
+    const retr = sp.hasLevel ? 'pull back to it' : ('pull back to the '+sp.fib+'% retrace at <b>'+fmtPrice(sp.entry)+'</b>');
+    el.innerHTML = '<span class="st-wait">&#9203; Awaiting breakout + retrace + rejection</span> — price must break '+what+', '+retr+', then print a rejection (pin bar / engulfing). Enter at that rejection close.';
     return;
   }
   if(sp.status==='awaiting'){
